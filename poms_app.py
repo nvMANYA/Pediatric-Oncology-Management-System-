@@ -4,6 +4,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import json
+import os 
+
+# --- Configuration Constants ---
+PRIMARY_COLOR = '#009688'
+ACCENT_COLOR = '#4db6ac'
+BACKEND_FILE = 'poms_data.json' # Define the JSON file for persistent storage
 
 # Page configuration
 st.set_page_config(
@@ -51,14 +57,61 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Utility Variables ---
-PRIMARY_COLOR = '#009688'
-ACCENT_COLOR = '#4db6ac'
+# --- Backend Persistence Functions (NEW) ---
 
-# --- Data Management Functions ---
+def save_data_to_backend():
+    """Saves all current session state data to the defined JSON file."""
+    data_to_save = {
+        "patients": st.session_state.patients,
+        "doctors": st.session_state.doctors,
+        "rooms": st.session_state.rooms,
+        "appointments": st.session_state.appointments,
+        "treatment_plans": st.session_state.treatment_plans,
+        "diagnosis": st.session_state.diagnosis,
+        "billing": st.session_state.billing,
+        "lastSaved": datetime.now().isoformat()
+    }
+    try:
+        with open(BACKEND_FILE, 'w') as f:
+            # We use the default encoder, assuming all dates are strings/None as per your structure
+            json.dump(data_to_save, f, indent=4)
+        st.toast("✅ Data persistently saved to backend JSON.", icon='💾')
+    except Exception as e:
+        st.error(f"Error saving data to backend: {e}")
+
+def load_data_from_backend():
+    """Loads data from the JSON file, or returns False if not found/error."""
+    if os.path.exists(BACKEND_FILE):
+        try:
+            with open(BACKEND_FILE, 'r') as f:
+                imported_data = json.load(f)
+            
+            # Populate session state if keys exist in the loaded data
+            st.session_state.patients = imported_data.get('patients', [])
+            st.session_state.doctors = imported_data.get('doctors', [])
+            st.session_state.rooms = imported_data.get('rooms', [])
+            st.session_state.appointments = imported_data.get('appointments', [])
+            st.session_state.treatment_plans = imported_data.get('treatment_plans', [])
+            st.session_state.diagnosis = imported_data.get('diagnosis', [])
+            st.session_state.billing = imported_data.get('billing', [])
+            
+            return True
+        except Exception as e:
+            st.error(f"Error loading data from backend: {e}")
+            return False
+    return False
+
+# --- Data Management Functions (UPDATED to call Persistence) ---
 
 def init_sample_data():
     if 'initialized' not in st.session_state:
+        # Attempt to load from persistent backend first
+        if load_data_from_backend():
+            st.session_state.initialized = True
+            st.session_state.menu = "Dashboard"
+            return
+        
+        # If no file found, initialize with sample data
         # --- DOCTORS (6 existing + 8 new = 14 total) ---
         st.session_state.doctors = [
             {"doctor_id": 1, "name": "Dr. Meena", "degree": "MD", "specialization": "Oncology", "contact": "987650001"},
@@ -91,7 +144,7 @@ def init_sample_data():
              "diagnosis": "Anemia", "admission_date": "2025-03-05", "discharge_date": None, "doctor_id": 4, "status": "Admitted"},
             {"patient_id": 5, "name": "Aditi", "age": 7, "dob": "2018-09-09", "gender": "Female", "address": "Hassan", 
              "diagnosis": "Infection", "admission_date": "2025-03-15", "discharge_date": None, "doctor_id": 5, "status": "Admitted"},
-             
+            
             # New patients (15 total)
             {"patient_id": 6, "name": "Vivaan", "age": 6, "dob": "2019-02-20", "gender": "Male", "address": "Pune", 
              "diagnosis": "Leukemia", "admission_date": "2025-03-20", "discharge_date": None, "doctor_id": 1, "status": "Admitted"},
@@ -147,9 +200,6 @@ def init_sample_data():
             {"room_id": 16, "room_type": "ICU", "occupancy_status": "Occupied", "patient_id": 17, "cost_per_day": 30000.00},
             {"room_id": 17, "room_type": "General", "occupancy_status": "Vacant", "patient_id": None, "cost_per_day": 5000.00},
             {"room_id": 18, "room_type": "Private", "occupancy_status": "Occupied", "patient_id": 18, "cost_per_day": 15000.00},
-            # Patient IDs 1, 3, 9, 12, 16 are discharged and not in rooms.
-            # Patient ID 19 is Admitted but waiting for a room (Room 19 is Vacant).
-            # Patient ID 20 is Admitted but waiting for a room (Room 20 is Vacant).
         ]
         
         # --- APPOINTMENTS (6 existing + 8 new = 14 total) ---
@@ -261,8 +311,10 @@ def init_sample_data():
         
         st.session_state.initialized = True
         st.session_state.menu = "Dashboard"
+        # Save sample data to create the initial backend file
+        save_data_to_backend() 
 
-# --- Utility Functions ---
+# --- Utility Functions (UPDATED to use save_data_to_backend) ---
 
 def get_patient_name(patient_id):
     """FUNCTION: Takes an ID and returns a name. Pure look-up with no side effects."""
@@ -279,8 +331,7 @@ def find_patient_room(patient_id):
     return next((r for r in st.session_state.rooms if r.get('patient_id') == patient_id and r['occupancy_status'] == 'Occupied'), None)
 
 def add_auto_bill_entry(patient_id, record_type, amount, date, description):
-    """PROCEDURE: Performs a side-effect: creates a new record in st.session_state.billing.
-       Uses st.toast() for the message to survive redirection."""
+    """PROCEDURE: Performs a side-effect: creates a new record in st.session_state.billing and saves to backend."""
     new_id = max([b['bill_id'] for b in st.session_state.billing]) + 1 if st.session_state.billing else 1
     new_bill = {
         "bill_id": new_id,
@@ -291,11 +342,12 @@ def add_auto_bill_entry(patient_id, record_type, amount, date, description):
         "description": f"{record_type}"
     }
     st.session_state.billing.append(new_bill)
+    save_data_to_backend() # <--- NEW: Save to backend after auto-billing
     
     # --- FIX: Using st.toast() instead of st.success() to survive the rerun/redirect ---
     st.toast(f"✅ Automated Bill (₹{amount:,.0f}) created for {get_patient_name(patient_id)}.", icon='💰')
 
-# --- Page Functions ---
+# --- Page Functions (CRUD Operations updated to call save_data_to_backend) ---
 
 def show_dashboard():
     st.markdown('<h1 class="main-header">Dashboard</h1>', unsafe_allow_html=True)
@@ -544,6 +596,8 @@ def show_patients():
                             room_to_update['occupancy_status'] = 'Occupied'
                             
                     
+                    save_data_to_backend() # <--- NEW: Save to backend after patient update/creation
+                    
                     st.session_state.show_patient_form = False
                     st.session_state.edit_patient_id = None
                     st.rerun()
@@ -572,7 +626,7 @@ def show_patients():
             
             # Table Header
             for i, col_name in enumerate(display_df.columns):
-                 col_list[i].write(f"**{col_name}**")
+                col_list[i].write(f"**{col_name}**")
             col_list[-2].write("**Edit**")
             col_list[-1].write("**Delete**")
 
@@ -607,6 +661,8 @@ def show_patients():
                         st.session_state.appointments = [a for a in st.session_state.appointments if a['patient_id'] != patient_id_to_delete]
                         st.session_state.treatment_plans = [t for t in st.session_state.treatment_plans if t['patient_id'] != patient_id_to_delete]
                         st.session_state.diagnosis = [d for d in st.session_state.diagnosis if d['patient_id'] != patient_id_to_delete]
+                        
+                        save_data_to_backend() # <--- NEW: Save to backend after deletion
                         
                         st.success(f"Patient {patient_name} and ALL associated records deleted successfully.")
                         st.session_state.pop(f'confirm_delete_patient_{patient_id_to_delete}')
@@ -665,6 +721,8 @@ def show_doctors():
                         st.session_state.doctors.append(new_doctor)
                         st.success(f"Doctor {name} added successfully!")
                         
+                    save_data_to_backend() # <--- NEW: Save to backend after doctor update/creation
+                        
                     st.session_state.show_doctor_form = False
                     st.session_state.edit_doctor_id = None
                     st.rerun()
@@ -687,7 +745,7 @@ def show_doctors():
             
             col_list = st.columns(len(display_df.columns) + 2)
             for i, col_name in enumerate(display_df.columns):
-                 col_list[i].write(f"**{col_name}**")
+                col_list[i].write(f"**{col_name}**")
             col_list[-2].write("**Edit**")
             col_list[-1].write("**Delete**")
 
@@ -704,13 +762,15 @@ def show_doctors():
                 
                 # Delete Button (Accessing the correct key: 'ID')
                 if row_cols[-1].button("🗑️", key=f"delete_doctor_{row['ID']}"):
-                    if st.session_state.get(f'confirm_delete_doctor_{row["ID"]}', False):
-                        st.session_state.doctors = [d for d in st.session_state.doctors if d['doctor_id'] != row['ID']]
+                    doctor_id_to_delete = row['ID']
+                    if st.session_state.get(f'confirm_delete_doctor_{doctor_id_to_delete}', False):
+                        st.session_state.doctors = [d for d in st.session_state.doctors if d['doctor_id'] != doctor_id_to_delete]
                         st.success(f"Doctor {row['Name']} deleted successfully.")
-                        st.session_state.pop(f'confirm_delete_doctor_{row["ID"]}')
+                        st.session_state.pop(f'confirm_delete_doctor_{doctor_id_to_delete}')
+                        save_data_to_backend() # <--- NEW: Save to backend after deletion
                         st.rerun()
                     else:
-                        st.session_state[f'confirm_delete_doctor_{row["ID"]}'] = True
+                        st.session_state[f'confirm_delete_doctor_{doctor_id_to_delete}'] = True
                         st.warning(f"Click Delete again to confirm deleting **{row['Name']}**.")
         else:
             st.info("No doctor records found.")
@@ -758,9 +818,9 @@ def show_rooms():
                     default_index = 0
 
                 patient_id = st.selectbox("Occupied By Patient*", 
-                                          options=patient_options,
-                                          format_func=lambda x: get_patient_name(x),
-                                          index=default_index)
+                                         options=patient_options,
+                                         format_func=lambda x: get_patient_name(x),
+                                         index=default_index)
 
             col1, col2 = st.columns(2)
             with col1:
@@ -783,6 +843,8 @@ def show_rooms():
                     else:
                         st.session_state.rooms.append(new_room)
                         st.success(f"Room {room_id} added successfully!")
+
+                    save_data_to_backend() # <--- NEW: Save to backend after room update/creation
 
                     st.session_state.show_room_form = False
                     st.session_state.edit_room_id = None
@@ -808,7 +870,7 @@ def show_rooms():
             
             col_list = st.columns(len(display_df.columns) + 2)
             for i, col_name in enumerate(display_df.columns):
-                 col_list[i].write(f"**{col_name}**")
+                col_list[i].write(f"**{col_name}**")
             col_list[-2].write("**Edit**")
             col_list[-1].write("**Delete**")
 
@@ -825,15 +887,17 @@ def show_rooms():
                 
                 # Delete Button (Accessing the correct key: 'Room ID')
                 if row_cols[-1].button("🗑️", key=f"delete_room_{row['Room ID']}"):
+                    room_id_to_delete = row['Room ID']
                     if row['Status'] == 'Occupied':
                         st.error("Cannot delete an occupied room. Please discharge the patient first.")
-                    elif st.session_state.get(f'confirm_delete_room_{row["Room ID"]}', False):
-                        st.session_state.rooms = [r for r in st.session_state.rooms if r['room_id'] != row['Room ID']]
-                        st.success(f"Room {row['Room ID']} deleted successfully.")
-                        st.session_state.pop(f'confirm_delete_room_{row["Room ID"]}')
+                    elif st.session_state.get(f'confirm_delete_room_{room_id_to_delete}', False):
+                        st.session_state.rooms = [r for r in st.session_state.rooms if r['room_id'] != room_id_to_delete]
+                        st.success(f"Room {room_id_to_delete} deleted successfully.")
+                        st.session_state.pop(f'confirm_delete_room_{room_id_to_delete}')
+                        save_data_to_backend() # <--- NEW: Save to backend after deletion
                         st.rerun()
                     else:
-                        st.session_state[f'confirm_delete_room_{row["ID"]}'] = True
+                        st.session_state[f'confirm_delete_room_{room_id_to_delete}'] = True
                         st.warning(f"Click Delete again to confirm deleting **Room {row['Room ID']}**.")
         else:
             st.info("No room records found.")
@@ -942,6 +1006,8 @@ def show_billing():
                         st.session_state.billing.append(new_bill)
                         st.success("Bill added successfully!")
 
+                    save_data_to_backend() # <--- NEW: Save to backend after billing update/creation
+
                     st.session_state.show_billing_form = False
                     st.session_state.edit_bill_id = None
                     st.rerun()
@@ -967,7 +1033,7 @@ def show_billing():
             # Table display and CRUD buttons
             col_list = st.columns(len(display_df.columns) + 2)
             for i, col_name in enumerate(display_df.columns):
-                 col_list[i].write(f"**{col_name}**")
+                col_list[i].write(f"**{col_name}**")
             col_list[-2].write("**Edit**")
             col_list[-1].write("**Delete**")
 
@@ -989,13 +1055,14 @@ def show_billing():
                         st.session_state.billing = [b for b in st.session_state.billing if b['bill_id'] != bill_id_to_delete]
                         st.success(f"Bill {bill_id_to_delete} deleted successfully.")
                         st.session_state.pop(f'confirm_delete_bill_{bill_id_to_delete}')
+                        save_data_to_backend() # <--- NEW: Save to backend after deletion
                         st.rerun()
                     else:
                         st.session_state[f'confirm_delete_bill_{bill_id_to_delete}'] = True
                         st.warning(f"Click Delete again to confirm deleting **Bill {bill_id_to_delete}**.")
         else:
             if selected_name == 'All Bills (All Patients)':
-                 st.info(f"No billing records found.")
+                st.info(f"No billing records found.")
 
 # Reports page (same as before)
 def show_reports():
@@ -1034,7 +1101,7 @@ def show_reports():
             monthly_counts = monthly_counts.sort_values('month_year')
 
             fig = px.bar(monthly_counts, x='month_label', y='count', color='count', 
-                         color_discrete_sequence=[PRIMARY_COLOR]) # Use NEW color
+                          color_discrete_sequence=[PRIMARY_COLOR]) # Use NEW color
             fig.update_layout(xaxis_title="Month", yaxis_title="Admissions", showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -1080,9 +1147,9 @@ def show_appointments():
             col1, col2 = st.columns(2)
             with col1:
                 patient_id = st.selectbox("Patient*", 
-                                          options=[p['patient_id'] for p in st.session_state.patients],
-                                          format_func=lambda x: get_patient_name(x),
-                                          index=[p['patient_id'] for p in st.session_state.patients].index(defaults['patient_id']))
+                                         options=[p['patient_id'] for p in st.session_state.patients],
+                                         format_func=lambda x: get_patient_name(x),
+                                         index=[p['patient_id'] for p in st.session_state.patients].index(defaults['patient_id']))
                 date = st.date_input("Date*", value=datetime.strptime(defaults['date'], "%Y-%m-%d").date() if isinstance(defaults['date'], str) else defaults['date'])
             with col2:
                 doctor_id = st.selectbox("Doctor*", 
@@ -1119,6 +1186,8 @@ def show_appointments():
                                             f"Consultation with {get_doctor_name(doctor_id)}")
                         st.session_state.menu = "Billing" # <--- Automated Navigation
 
+                    save_data_to_backend() # <--- NEW: Save to backend after appointment update/creation
+
                     st.session_state.show_appointment_form = False
                     st.session_state.edit_appointment_id = None
                     st.rerun()
@@ -1143,7 +1212,7 @@ def show_appointments():
             
             col_list = st.columns(len(display_df.columns) + 2)
             for i, col_name in enumerate(display_df.columns):
-                 col_list[i].write(f"**{col_name}**")
+                col_list[i].write(f"**{col_name}**")
             col_list[-2].write("**Edit**")
             col_list[-1].write("**Delete**")
 
@@ -1160,13 +1229,15 @@ def show_appointments():
                 
                 # Delete Button (Accessing the correct key: 'ID')
                 if row_cols[-1].button("🗑️", key=f"delete_appointment_{row['ID']}"):
-                    if st.session_state.get(f'confirm_delete_appointment_{row["ID"]}', False):
-                        st.session_state.appointments = [a for a in st.session_state.appointments if a['appointment_id'] != row['ID']]
-                        st.success(f"Appointment {row['ID']} deleted successfully.")
-                        st.session_state.pop(f'confirm_delete_appointment_{row["ID"]}')
+                    appointment_id_to_delete = row['ID']
+                    if st.session_state.get(f'confirm_delete_appointment_{appointment_id_to_delete}', False):
+                        st.session_state.appointments = [a for a in st.session_state.appointments if a['appointment_id'] != appointment_id_to_delete]
+                        st.success(f"Appointment {appointment_id_to_delete} deleted successfully.")
+                        st.session_state.pop(f'confirm_delete_appointment_{appointment_id_to_delete}')
+                        save_data_to_backend() # <--- NEW: Save to backend after deletion
                         st.rerun()
                     else:
-                        st.session_state[f'confirm_delete_appointment_{row["ID"]}'] = True
+                        st.session_state[f'confirm_delete_appointment_{appointment_id_to_delete}'] = True
                         st.warning(f"Click Delete again to confirm deleting **Appointment {row['ID']}**.")
         else:
             st.info("No appointment records found.")
@@ -1197,9 +1268,9 @@ def show_treatment():
             col1, col2 = st.columns(2)
             with col1:
                 patient_id = st.selectbox("Patient*", 
-                                          options=[p['patient_id'] for p in st.session_state.patients],
-                                          format_func=lambda x: get_patient_name(x),
-                                          index=[p['patient_id'] for p in st.session_state.patients].index(defaults['patient_id']))
+                                         options=[p['patient_id'] for p in st.session_state.patients],
+                                         format_func=lambda x: get_patient_name(x),
+                                         index=[p['patient_id'] for p in st.session_state.patients].index(defaults['patient_id']))
                 start_date = st.date_input("Start Date*", value=datetime.strptime(defaults['start_date'], "%Y-%m-%d").date() if isinstance(defaults['start_date'], str) else defaults['start_date'])
             with col2:
                 doctor_id = st.selectbox("Doctor*", 
@@ -1237,6 +1308,8 @@ def show_treatment():
                         add_auto_bill_entry(patient_id, "Treatment Plan", 10000.00, datetime.now().strftime("%Y-%m-%d"), details.split('\n')[0])
                         st.session_state.menu = "Billing" # <--- Automated Navigation
                         
+                    save_data_to_backend() # <--- NEW: Save to backend after plan update/creation
+                        
                     st.session_state.show_treatment_form = False
                     st.session_state.edit_plan_id = None
                     st.rerun()
@@ -1262,7 +1335,7 @@ def show_treatment():
             
             col_list = st.columns(len(display_df.columns) + 2)
             for i, col_name in enumerate(display_df.columns):
-                 col_list[i].write(f"**{col_name}**")
+                col_list[i].write(f"**{col_name}**")
             col_list[-2].write("**Edit**")
             col_list[-1].write("**Delete**")
 
@@ -1284,6 +1357,7 @@ def show_treatment():
                         st.session_state.treatment_plans = [t for t in st.session_state.treatment_plans if t['plan_id'] != plan_id_to_delete]
                         st.success(f"Treatment Plan {plan_id_to_delete} deleted successfully.")
                         st.session_state.pop(f'confirm_delete_plan_{plan_id_to_delete}')
+                        save_data_to_backend() # <--- NEW: Save to backend after deletion
                         st.rerun()
                     else:
                         st.session_state[f'confirm_delete_plan_{plan_id_to_delete}'] = True
@@ -1316,9 +1390,9 @@ def show_diagnosis():
             col1, col2 = st.columns(2)
             with col1:
                 patient_id = st.selectbox("Patient*", 
-                                          options=[p['patient_id'] for p in st.session_state.patients],
-                                          format_func=lambda x: get_patient_name(x),
-                                          index=[p['patient_id'] for p in st.session_state.patients].index(defaults['patient_id']))
+                                         options=[p['patient_id'] for p in st.session_state.patients],
+                                         format_func=lambda x: get_patient_name(x),
+                                         index=[p['patient_id'] for p in st.session_state.patients].index(defaults['patient_id']))
                 diagnosis_type = st.selectbox("Diagnosis Type*", ["Blood", "Scan", "Biopsy", "Other"], index=["Blood", "Scan", "Biopsy", "Other"].index(defaults['diagnosis_type']))
             with col2:
                 disease_type = st.text_input("Disease Type*", placeholder="e.g., Leukemia, Lymphoma", value=defaults['disease_type'])
@@ -1351,6 +1425,8 @@ def show_diagnosis():
                         add_auto_bill_entry(patient_id, "Diagnosis", 5000.00, datetime.now().strftime("%Y-%m-%d"), f"{disease_type} - {diagnosis_type}")
                         st.session_state.menu = "Billing" # <--- Automated Navigation
 
+                    save_data_to_backend() # <--- NEW: Save to backend after diagnosis update/creation
+
                     st.session_state.show_diagnosis_form = False
                     st.session_state.edit_diagnosis_id = None
                     st.rerun()
@@ -1374,7 +1450,7 @@ def show_diagnosis():
             
             col_list = st.columns(len(display_df.columns) + 2)
             for i, col_name in enumerate(display_df.columns):
-                 col_list[i].write(f"**{col_name}**")
+                col_list[i].write(f"**{col_name}**")
             col_list[-2].write("**Edit**")
             col_list[-1].write("**Delete**")
 
@@ -1391,13 +1467,15 @@ def show_diagnosis():
                 
                 # Delete Button (Accessing the correct key: 'ID')
                 if row_cols[-1].button("🗑️", key=f"delete_diagnosis_{row['ID']}"):
-                    if st.session_state.get(f'confirm_delete_diagnosis_{row["ID"]}', False):
-                        st.session_state.diagnosis = [d for d in st.session_state.diagnosis if d['diagnosis_id'] != row['ID']]
-                        st.success(f"Diagnosis Record {row['ID']} deleted successfully.")
-                        st.session_state.pop(f'confirm_delete_diagnosis_{row["ID"]}')
+                    diagnosis_id_to_delete = row['ID']
+                    if st.session_state.get(f'confirm_delete_diagnosis_{diagnosis_id_to_delete}', False):
+                        st.session_state.diagnosis = [d for d in st.session_state.diagnosis if d['diagnosis_id'] != diagnosis_id_to_delete]
+                        st.success(f"Diagnosis Record {diagnosis_id_to_delete} deleted successfully.")
+                        st.session_state.pop(f'confirm_delete_diagnosis_{diagnosis_id_to_delete}')
+                        save_data_to_backend() # <--- NEW: Save to backend after deletion
                         st.rerun()
                     else:
-                        st.session_state[f'confirm_delete_diagnosis_{row["ID"]}'] = True
+                        st.session_state[f'confirm_delete_diagnosis_{diagnosis_id_to_delete}'] = True
                         st.warning(f"Click Delete again to confirm deleting **Record {row['ID']}**.")
         else:
             st.info("No diagnosis records found.")
@@ -1408,7 +1486,7 @@ def show_data_management():
     
     # --- Row 1: System Procedure Testing ---
     st.subheader("System Procedure Testing")
-    st.caption("A **Procedure** executes logic that modifies the application's internal data (state).")
+    st.caption("A **Procedure** executes logic that modifies the application's internal data (state) and saves to the persistent backend.")
     
     demo_patient_id = st.selectbox("Select Patient for Procedure:", options=[p['patient_id'] for p in st.session_state.patients], 
                                    format_func=lambda x: f"ID {x}: {get_patient_name(x)}", key="proc_patient_select")
@@ -1421,7 +1499,7 @@ def show_data_management():
         
         if st.button("▶️ Execute Procedure (Updates Billing List)", key="run_proc_demo", use_container_width=True):
             # Trigger: Button Click
-            # PROCEDURE CALL (Side effect: changes st.session_state.billing and redirects)
+            # PROCEDURE CALL (Side effect: changes st.session_state.billing, calls save_data_to_backend, and redirects)
             add_auto_bill_entry(demo_patient_id, "Admin Fee", admin_fee, datetime.now().strftime("%Y-%m-%d"), "Demonstration of a side-effect") 
             # Note: st.toast() inside add_auto_bill_entry will display the message
             st.session_state.menu = "Billing"
@@ -1487,6 +1565,7 @@ def show_data_management():
                 st.session_state.diagnosis = []
                 st.session_state.billing = []
                 st.session_state.confirm_clear = False
+                save_data_to_backend() # <--- NEW: Save empty lists to backend after clearing
                 st.success("All data cleared!")
                 st.rerun()
             else:
@@ -1519,22 +1598,18 @@ def show_data_management():
         if uploaded_file is not None:
             try:
                 import_data = json.load(uploaded_file)
-                if 'patients' in import_data:
-                    st.session_state.patients = import_data['patients']
-                if 'doctors' in import_data:
-                    st.session_state.doctors = import_data['doctors']
-                if 'rooms' in import_data:
-                    st.session_state.rooms = import_data['rooms']
-                if 'appointments' in import_data:
-                    st.session_state.appointments = import_data['appointments']
-                if 'treatment_plans' in import_data:
-                    st.session_state.treatment_plans = import_data['treatment_plans']
-                if 'diagnosis' in import_data:
-                    st.session_state.diagnosis = import_data['diagnosis']
-                if 'billing' in import_data:
-                    st.session_state.billing = import_data['billing']
+                # Manually update session state with imported data
+                st.session_state.patients = import_data.get('patients', [])
+                st.session_state.doctors = import_data.get('doctors', [])
+                st.session_state.rooms = import_data.get('rooms', [])
+                st.session_state.appointments = import_data.get('appointments', [])
+                st.session_state.treatment_plans = import_data.get('treatment_plans', [])
+                st.session_state.diagnosis = import_data.get('diagnosis', [])
+                st.session_state.billing = import_data.get('billing', [])
+                
                 st.session_state.initialized = True
-                st.success("Data imported successfully!")
+                save_data_to_backend() # <--- NEW: Save imported data to backend
+                st.success("Data imported and saved to backend successfully!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Error importing data: {str(e)}")
